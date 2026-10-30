@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum NodeType {
+  FILE
+  FOLDER
+}
+
+enum UploadStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum Role {
+  VIEWER
+  EDITOR
+}
+
+enum AccessRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
+  CANCELLED
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime  @default(now())
+
+  ownedNodes       Node[]          @relation("NodeOwner")
+  permissions      Permission[]    @relation("UserPermissions")
+  grantedPermissions Permission[]  @relation("GrantedPermissions")
+  createdLinks     ShareLink[]     @relation("CreatedLinks")
+  accessRequests   AccessRequest[] @relation("RequesterAccessRequests")
+  resolvedRequests AccessRequest[] @relation("ResolverAccessRequests")
+  auditLogs        AuditLog[]      @relation("ActorAuditLogs")
+  notifications    Notification[]  @relation("UserNotifications")
+
+  @@map("users")
+}
+
+model Node {
+  id           String        @id @default(uuid()) @db.Uuid
+  ownerId      String        @db.Uuid
+  parentId     String?       @db.Uuid
+  type         NodeType
+  name         String
+  path         String        // Materialized path e.g. /rootId/parentId/
+  depth        Int           @default(0)
+  mimeType     String?
+  size         BigInt?
+  storageKey   String?       @unique // Flat UUID S3 key for files only
+  bucket       String?
+  etag         String?
+  uploadStatus UploadStatus?
+  deletedAt    DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  owner          User            @relation("NodeOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  parent         Node?           @relation("NodeHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Node[]          @relation("NodeHierarchy")
+  permissions    Permission[]
+  shareLinks     ShareLink[]
+  accessRequests AccessRequest[]
+
+  @@index([ownerId, parentId])
+  @@index([path])
+  @@index([deletedAt])
+  @@index([uploadStatus, createdAt])
+  @@map("nodes")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Uuid
+  nodeId      String   @db.Uuid
+  userId      String   @db.Uuid
+  role        Role
+  grantedById String   @db.Uuid
+  createdAt   DateTime @default(now())
+
+  node      Node @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  user      User @relation("UserPermissions", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User @relation("GrantedPermissions", fields: [grantedById], references: [id], onDelete: Cascade)
+
+  @@unique([nodeId, userId])
+  @@index([userId])
+  @@map("permissions")
+}
+
+model ShareLink {
+  id          String    @id @default(uuid()) @db.Uuid
+  nodeId      String    @db.Uuid
+  tokenHash   String    @unique
+  role        Role
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdById String    @db.Uuid
+  useCount    Int       @default(0)
+  createdAt   DateTime  @default(now())
+
+  node      Node @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  createdBy User @relation("CreatedLinks", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([nodeId])
+  @@index([expiresAt])
+  @@map("share_links")
+}
+
+model AccessRequest {
+  id            String              @id @default(uuid()) @db.Uuid
+  nodeId        String              @db.Uuid
+  requesterId   String              @db.Uuid
+  requestedRole Role
+  status        AccessRequestStatus @default(PENDING)
+  message       String?
+  resolvedById  String?             @db.Uuid
+  resolvedAt    DateTime?
+  createdAt     DateTime            @default(now())
+
+  node       Node  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  requester  User  @relation("RequesterAccessRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+  resolvedBy User? @relation("ResolverAccessRequests", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([nodeId])
+  @@index([requesterId])
+  @@map("access_requests")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String?  @db.Uuid
+  action    String
+  nodeId    String?  @db.Uuid
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  actor User? @relation("ActorAuditLogs", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([nodeId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model StorageDeletion {
+  id         String   @id @default(uuid()) @db.Uuid
+  storageKey String
+  attempts   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("storage_deletions")
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  type      String
+  payload   Json
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}

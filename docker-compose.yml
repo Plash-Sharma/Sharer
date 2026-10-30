@@ -1,0 +1,86 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: drivelite-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "postgresql://drivelite:drivelite@postgres:5432/drivelite?schema=public"
+      APP_URL: "http://localhost:3000"
+      JWT_SECRET: ${JWT_SECRET:-super-secret-drive-lite-jwt-key-minimum-32-chars!}
+      S3_ENDPOINT_INTERNAL: "http://minio:9000"
+      S3_ENDPOINT_PUBLIC: "http://localhost:9000"
+      S3_REGION: "us-east-1"
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-drivelite-files}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  postgres:
+    image: postgres:16
+    container_name: drivelite-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: drivelite
+      POSTGRES_PASSWORD: drivelite
+      POSTGRES_DB: drivelite
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./prisma/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drivelite -d drivelite"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: drivelite-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:3000"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: drivelite-mc:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.mc
+    container_name: drivelite-minio-init
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-drivelite-files}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do sleep 1; done;
+      mc mb --ignore-existing local/$$S3_BUCKET;
+      mc anonymous set none local/$$S3_BUCKET;
+      mc admin user add local $$S3_ACCESS_KEY $$S3_SECRET_KEY || true;
+      mc admin policy attach local readwrite --user $$S3_ACCESS_KEY || true;
+      echo 'MinIO initialization complete.'
+      "
+
+volumes:
+  postgres_data:
+  minio_data:
